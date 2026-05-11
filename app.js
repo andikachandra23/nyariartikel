@@ -180,6 +180,7 @@ function renderResults() {
         <div class="cacts">
           ${pdf?`<a href="${pdf}" target="_blank" class="btn btn-pdf">⬇ PDF</a>`:''}
           ${doi?`<a href="https://doi.org/${doi}" target="_blank" class="btn btn-doi">DOI →</a>`:''}
+          <button class="btn btn-detail" onclick="openDetail(${i})">🔗 Related</button>
           <button class="btn btn-bib" onclick="exportOne(${i})">📋 BibTeX</button>
           <button class="btn btn-save ${isSaved(key)?'saved':''}" id="savebtn_${eId(key)}" onclick="toggleSave(${i})">${isSaved(key)?'🔖 Tersimpan':'🔖 Simpan'}</button>
         </div>
@@ -613,3 +614,220 @@ function toast(msg){
 }
 
 document.getElementById('q').addEventListener('keydown',e=>{if(e.key==='Enter')triggerSearch();});
+// ═══════════════════════════════════════════════════
+//  SEARCH HISTORY
+// ═══════════════════════════════════════════════════
+const HISTORY_KEY = 'na_history';
+const HISTORY_MAX = 20;
+
+function loadHistory() {
+  try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch(e) { return []; }
+}
+function saveHistory(arr) { localStorage.setItem(HISTORY_KEY, JSON.stringify(arr)); }
+
+function pushHistory(q) {
+  if (!q || q.trim().length < 2) return;
+  let h = loadHistory().filter(x => x.q !== q);
+  h.unshift({ q, ts: Date.now() });
+  if (h.length > HISTORY_MAX) h = h.slice(0, HISTORY_MAX);
+  saveHistory(h);
+  renderHistory();
+}
+
+function renderHistory() {
+  const list = document.getElementById('historyList');
+  if (!list) return;
+  const h = loadHistory();
+  if (!h.length) {
+    list.innerHTML = '<div class="hist-empty">Belum ada riwayat pencarian.</div>';
+    return;
+  }
+  list.innerHTML = h.map((item, i) => `
+    <div class="hist-item" onclick="historySearch('${eKey(item.q)}')">
+      <span class="hist-icon">🕐</span>
+      <span class="hist-q">${esc(item.q)}</span>
+      <span class="hist-time">${timeAgo(item.ts)}</span>
+      <button class="hist-del" onclick="deleteHistory(event,${i})" title="Hapus">✕</button>
+    </div>`).join('');
+}
+
+function historySearch(q) {
+  document.getElementById('q').value = q;
+  closeHistory();
+  S.q = q; S.page = 1; doSearch();
+}
+
+function deleteHistory(e, idx) {
+  e.stopPropagation();
+  const h = loadHistory();
+  h.splice(idx, 1);
+  saveHistory(h);
+  renderHistory();
+  if (!loadHistory().length) closeHistory();
+}
+
+function clearHistory() {
+  if (!confirm('Hapus semua riwayat pencarian?')) return;
+  saveHistory([]);
+  renderHistory();
+  closeHistory();
+}
+
+function openHistory() {
+  renderHistory();
+  document.getElementById('historyOverlay').classList.add('show');
+}
+function closeHistory() { document.getElementById('historyOverlay').classList.remove('show'); }
+function closeHistoryOutside(e) { if (e.target === document.getElementById('historyOverlay')) closeHistory(); }
+
+function timeAgo(ts) {
+  const diff = Date.now() - ts;
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return 'baru saja';
+  if (m < 60) return `${m} menit lalu`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} jam lalu`;
+  const d = Math.floor(h / 24);
+  if (d < 7) return `${d} hari lalu`;
+  return new Date(ts).toLocaleDateString('id-ID', { day:'numeric', month:'short' });
+}
+
+// Hook pushHistory into doSearch
+const _origDoSearch = doSearch;
+doSearch = async function() {
+  if (S.q) pushHistory(S.q);
+  return _origDoSearch.apply(this, arguments);
+};
+
+// ═══════════════════════════════════════════════════
+//  DETAIL PANEL — Related Papers & Cited By
+// ═══════════════════════════════════════════════════
+let _detailWork = null; // current work object being viewed
+
+async function openDetail(idx) {
+  const w = S.results[idx];
+  if (!w) return;
+  _detailWork = w;
+
+  const doi = w.doi?.replace('https://doi.org/', '') || null;
+  const oaId = w.id?.replace('https://openalex.org/', '') || null;
+  const title = w.title || 'Untitled';
+  const journal = w.primary_location?.source?.display_name || '';
+  const year = w.publication_year || '';
+  const cited = (w.cited_by_count || 0).toLocaleString('id-ID');
+
+  // Build header
+  document.getElementById('detailTitle').textContent = title;
+  document.getElementById('detailMeta').innerHTML =
+    `${journal ? `<span>📰 ${esc(journal)}</span>` : ''}
+     ${year ? `<span>📅 ${year}</span>` : ''}
+     <span>📌 ${cited} sitasi</span>
+     ${doi ? `<a href="https://doi.org/${doi}" target="_blank" class="btn btn-doi" style="font-size:.6rem;padding:3px 8px">DOI →</a>` : ''}`;
+
+  // Show overlay, default tab = related
+  document.getElementById('detailOverlay').classList.add('show');
+  switchDetailTab('related');
+
+  // Load related
+  loadRelated(oaId, doi);
+}
+
+function closeDetail() { document.getElementById('detailOverlay').classList.remove('show'); }
+function closeDetailOutside(e) { if (e.target === document.getElementById('detailOverlay')) closeDetail(); }
+
+function switchDetailTab(tab) {
+  document.querySelectorAll('.dtab-btn').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+  document.querySelectorAll('.dtab-pane').forEach(p => p.classList.toggle('on', p.dataset.tab === tab));
+  if (tab === 'cited' && _detailWork) {
+    const oaId = _detailWork.id?.replace('https://openalex.org/', '') || null;
+    loadCitedBy(oaId);
+  }
+}
+
+async function loadRelated(oaId, doi) {
+  const pane = document.getElementById('paneRelated');
+  pane.innerHTML = '<div class="detail-loading"><div class="spinner" style="width:28px;height:28px;margin:0 auto 10px"></div><p>Memuat paper terkait…</p></div>';
+
+  try {
+    // OpenAlex related works endpoint
+    const url = `https://api.openalex.org/works/${oaId}?select=related_works&mailto=scholarhunt@app.id`;
+    const res = await fetch(url);
+    const data = await res.json();
+    const relatedIds = (data.related_works || []).slice(0, 10);
+
+    if (!relatedIds.length) {
+      pane.innerHTML = '<div class="detail-empty">Tidak ada paper terkait ditemukan.</div>';
+      return;
+    }
+
+    // Fetch details of related works
+    const ids = relatedIds.join('|');
+    const r2 = await fetch(`https://api.openalex.org/works?filter=openalex_id:${ids}&select=id,doi,title,authorships,publication_year,primary_location,cited_by_count,open_access,best_oa_location&per-page=10&mailto=scholarhunt@app.id`);
+    const d2 = await r2.json();
+    renderDetailCards(pane, d2.results || [], 'related');
+  } catch(e) {
+    pane.innerHTML = '<div class="detail-empty">Gagal memuat paper terkait.</div>';
+  }
+}
+
+async function loadCitedBy(oaId) {
+  const pane = document.getElementById('paneCited');
+  if (pane.dataset.loaded === oaId) return; // already loaded
+  pane.innerHTML = '<div class="detail-loading"><div class="spinner" style="width:28px;height:28px;margin:0 auto 10px"></div><p>Memuat paper yang mengutip…</p></div>';
+  pane.dataset.loaded = oaId;
+
+  try {
+    const url = `https://api.openalex.org/works?filter=cites:${oaId}&sort=cited_by_count:desc&select=id,doi,title,authorships,publication_year,primary_location,cited_by_count,open_access,best_oa_location&per-page=10&mailto=scholarhunt@app.id`;
+    const res = await fetch(url);
+    const data = await res.json();
+    const works = data.results || [];
+
+    if (!works.length) {
+      pane.innerHTML = '<div class="detail-empty">Belum ada paper yang mengutip artikel ini.</div>';
+      return;
+    }
+
+    const total = data.meta?.count || works.length;
+    renderDetailCards(pane, works, 'cited', total);
+  } catch(e) {
+    pane.innerHTML = '<div class="detail-empty">Gagal memuat data sitasi.</div>';
+    delete pane.dataset.loaded;
+  }
+}
+
+function renderDetailCards(container, works, type, total) {
+  let html = '';
+  if (total && total > works.length) {
+    html += `<div class="detail-total">Menampilkan 10 dari <strong>${total.toLocaleString('id-ID')}</strong> paper yang mengutip</div>`;
+  }
+  works.forEach(w => {
+    const doi = w.doi?.replace('https://doi.org/', '') || null;
+    const pdf = w.best_oa_location?.pdf_url || w.open_access?.oa_url || null;
+    const title = w.title || 'Untitled';
+    const authors = (w.authorships || []).slice(0, 3).map(a => a.author?.display_name || '').filter(Boolean).join(', ');
+    const moreA = (w.authorships?.length || 0) > 3 ? ` +${w.authorships.length - 3}` : '';
+    const journal = w.primary_location?.source?.display_name || '';
+    const year = w.publication_year || '?';
+    const cited = (w.cited_by_count || 0).toLocaleString('id-ID');
+    const isOA = w.open_access?.is_oa;
+
+    html += `
+    <div class="dcard">
+      <div class="dcard-badges">
+        ${isOA ? '<span class="b b-oa">◉ Open Access</span>' : ''}
+        <span class="b b-yr">${year}</span>
+      </div>
+      <div class="dcard-title" onclick="${doi ? `window.open('https://doi.org/${doi}','_blank')` : ''}">${esc(title)}</div>
+      ${authors ? `<div class="dcard-auth">👤 ${esc(authors)}${moreA ? `<span style="color:var(--t3)"> ${moreA}</span>` : ''}</div>` : ''}
+      ${journal ? `<div class="dcard-jrnl">📰 ${esc(journal)}</div>` : ''}
+      <div class="dcard-foot">
+        <span class="dcard-cite">📌 ${cited} sitasi</span>
+        <div style="display:flex;gap:5px">
+          ${pdf ? `<a href="${pdf}" target="_blank" class="btn btn-pdf" style="font-size:.58rem;padding:3px 8px">⬇ PDF</a>` : ''}
+          ${doi ? `<a href="https://doi.org/${doi}" target="_blank" class="btn btn-doi" style="font-size:.58rem;padding:3px 8px">DOI →</a>` : ''}
+        </div>
+      </div>
+    </div>`;
+  });
+  container.innerHTML = html;
+}

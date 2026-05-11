@@ -27,6 +27,7 @@
       <span class="icon-light">☀️</span>
     </button>
     <span class="pill" id="exportPill" onclick="openModal()">📋 BibTeX <span class="cnt" id="selCnt">0</span></span>
+    <span class="pill" onclick="openHistory()">🕐 Riwayat</span>
     <span class="pill" onclick="openKoleksi()">🔖 Koleksi <span id="koleksiCount" style="background:var(--gold);color:#000;border-radius:100px;padding:1px 6px;font-size:.55rem;margin-left:2px;display:none">0</span></span>
     <span class="pill accent pill-hide-sm" onclick="document.getElementById('q').focus()">✦ Mulai Cari</span>
   </div>
@@ -239,6 +240,48 @@
 </div>
 
 <div class="toast" id="toast"></div>
+
+
+<!-- SEARCH HISTORY -->
+<div class="history-overlay" id="historyOverlay" onclick="closeHistoryOutside(event)">
+  <div class="history-panel">
+    <div class="history-head">
+      <div class="history-title">🕐 Riwayat Pencarian</div>
+      <div class="history-head-acts">
+        <span class="pill" style="font-size:.58rem;padding:5px 11px;color:var(--rose);border-color:rgba(255,107,138,.3)" onclick="clearHistory()">🗑 Hapus Semua</span>
+        <button class="mclose" onclick="closeHistory()">✕</button>
+      </div>
+    </div>
+    <div class="history-body" id="historyList">
+      <div class="hist-empty">Belum ada riwayat pencarian.</div>
+    </div>
+  </div>
+</div>
+
+<!-- DETAIL PANEL (Related + Cited By) -->
+<div class="detail-overlay" id="detailOverlay" onclick="closeDetailOutside(event)">
+  <div class="detail-panel">
+    <div class="detail-head">
+      <div class="detail-head-top">
+        <div class="detail-title-text" id="detailTitle"></div>
+        <button class="mclose" onclick="closeDetail()">✕</button>
+      </div>
+      <div class="detail-meta" id="detailMeta"></div>
+    </div>
+    <div class="dtabs">
+      <button class="dtab-btn on" data-tab="related" onclick="switchDetailTab('related')">🔗 Related Papers</button>
+      <button class="dtab-btn" data-tab="cited" onclick="switchDetailTab('cited')">📌 Cited By</button>
+    </div>
+    <div class="dtab-body">
+      <div class="dtab-pane on" data-tab="related" id="paneRelated">
+        <div class="detail-empty">Pilih artikel untuk melihat paper terkait.</div>
+      </div>
+      <div class="dtab-pane" data-tab="cited" id="paneCited">
+        <div class="detail-empty">Pilih artikel untuk melihat yang mengutip.</div>
+      </div>
+    </div>
+  </div>
+</div>
 
 <script src="app.js"></script>
 </body>
