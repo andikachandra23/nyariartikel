@@ -180,11 +180,16 @@ function renderResults() {
         <div class="cacts">
           ${pdf?`<a href="${pdf}" target="_blank" class="btn btn-pdf">⬇ PDF</a>`:''}
           ${doi?`<a href="https://doi.org/${doi}" target="_blank" class="btn btn-doi">DOI →</a>`:''}
-          <button class="btn btn-detail" onclick="openDetail(${i})">🔗 Related</button>
           <button class="btn btn-bib" onclick="exportOne(${i})">📋 BibTeX</button>
           <button class="btn btn-save ${isSaved(key)?'saved':''}" id="savebtn_${eId(key)}" onclick="toggleSave(${i})">${isSaved(key)?'🔖 Tersimpan':'🔖 Simpan'}</button>
         </div>
       </div>
+      <div class="card-expand-row">
+        <button class="btn-expand btn-expand-related" id="btn-rel_${eId(key)}" onclick="toggleSection('related','${eKey(key)}',${i})">🔗 Related Papers</button>
+        <button class="btn-expand btn-expand-cited"   id="btn-cit_${eId(key)}" onclick="toggleSection('cited','${eKey(key)}',${i})">📌 Cited By</button>
+      </div>
+      <div class="card-section" id="sec-related_${eId(key)}" data-loaded="0"></div>
+      <div class="card-section" id="sec-cited_${eId(key)}"   data-loaded="0"></div>
     </div>`;
   });
 
@@ -699,135 +704,114 @@ doSearch = async function() {
   return _origDoSearch.apply(this, arguments);
 };
 
-// ═══════════════════════════════════════════════════
-//  DETAIL PANEL — Related Papers & Cited By
-// ═══════════════════════════════════════════════════
-let _detailWork = null; // current work object being viewed
 
-async function openDetail(idx) {
+// ═══════════════════════════════════════════════════
+//  IN-CARD RELATED PAPERS & CITED BY
+// ═══════════════════════════════════════════════════
+function toggleSection(type, key, idx) {
+  const secId = `sec-${type}_${eId(key)}`;
+  const btnId = `btn-${type === 'related' ? 'rel' : 'cit'}_${eId(key)}`;
+  const sec = document.getElementById(secId);
+  const btn = document.getElementById(btnId);
+  if (!sec) return;
+
+  const isOpen = sec.classList.contains('open');
+  if (isOpen) {
+    sec.classList.remove('open');
+    if (btn) btn.classList.remove('open');
+    return;
+  }
+
+  sec.classList.add('open');
+  if (btn) btn.classList.add('open');
+
+  // Already loaded — just show
+  if (sec.dataset.loaded === '1') return;
+
   const w = S.results[idx];
   if (!w) return;
-  _detailWork = w;
 
-  const doi = w.doi?.replace('https://doi.org/', '') || null;
-  const oaId = w.id?.replace('https://openalex.org/', '') || null;
-  const title = w.title || 'Untitled';
-  const journal = w.primary_location?.source?.display_name || '';
-  const year = w.publication_year || '';
-  const cited = (w.cited_by_count || 0).toLocaleString('id-ID');
-
-  // Build header
-  document.getElementById('detailTitle').textContent = title;
-  document.getElementById('detailMeta').innerHTML =
-    `${journal ? `<span>📰 ${esc(journal)}</span>` : ''}
-     ${year ? `<span>📅 ${year}</span>` : ''}
-     <span>📌 ${cited} sitasi</span>
-     ${doi ? `<a href="https://doi.org/${doi}" target="_blank" class="btn btn-doi" style="font-size:.6rem;padding:3px 8px">DOI →</a>` : ''}`;
-
-  // Show overlay, default tab = related
-  document.getElementById('detailOverlay').classList.add('show');
-  switchDetailTab('related');
-
-  // Load related
-  loadRelated(oaId, doi);
+  if (type === 'related') loadRelatedInCard(sec, w);
+  else loadCitedInCard(sec, w);
 }
 
-function closeDetail() { document.getElementById('detailOverlay').classList.remove('show'); }
-function closeDetailOutside(e) { if (e.target === document.getElementById('detailOverlay')) closeDetail(); }
-
-function switchDetailTab(tab) {
-  document.querySelectorAll('.dtab-btn').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
-  document.querySelectorAll('.dtab-pane').forEach(p => p.classList.toggle('on', p.dataset.tab === tab));
-  if (tab === 'cited' && _detailWork) {
-    const oaId = _detailWork.id?.replace('https://openalex.org/', '') || null;
-    loadCitedBy(oaId);
-  }
-}
-
-async function loadRelated(oaId, doi) {
-  const pane = document.getElementById('paneRelated');
-  pane.innerHTML = '<div class="detail-loading"><div class="spinner" style="width:28px;height:28px;margin:0 auto 10px"></div><p>Memuat paper terkait…</p></div>';
+async function loadRelatedInCard(sec, w) {
+  sec.innerHTML = '<div class="cs-loading"><div class="mini-spin"></div> Memuat paper terkait…</div>';
+  const oaId = w.id?.replace('https://openalex.org/', '');
+  if (!oaId) { sec.innerHTML = '<div class="cs-empty">ID artikel tidak tersedia.</div>'; return; }
 
   try {
-    // OpenAlex related works endpoint
-    const url = `https://api.openalex.org/works/${oaId}?select=related_works&mailto=scholarhunt@app.id`;
-    const res = await fetch(url);
-    const data = await res.json();
-    const relatedIds = (data.related_works || []).slice(0, 10);
+    // Step 1: get related_works IDs
+    const r1 = await fetch(`https://api.openalex.org/works/${oaId}?select=related_works&mailto=scholarhunt@app.id`);
+    const d1 = await r1.json();
+    const ids = (d1.related_works || []).slice(0, 8);
+    if (!ids.length) { sec.innerHTML = '<div class="cs-empty">Tidak ada paper terkait ditemukan.</div>'; sec.dataset.loaded='1'; return; }
 
-    if (!relatedIds.length) {
-      pane.innerHTML = '<div class="detail-empty">Tidak ada paper terkait ditemukan.</div>';
-      return;
-    }
-
-    // Fetch details of related works
-    const ids = relatedIds.join('|');
-    const r2 = await fetch(`https://api.openalex.org/works?filter=openalex_id:${ids}&select=id,doi,title,authorships,publication_year,primary_location,cited_by_count,open_access,best_oa_location&per-page=10&mailto=scholarhunt@app.id`);
+    // Step 2: fetch details — OpenAlex accepts pipe-separated IDs as filter
+    const idStr = ids.map(id => id.replace('https://openalex.org/','')).join('|');
+    const r2 = await fetch(`https://api.openalex.org/works?filter=openalex_id:${idStr}&select=id,doi,title,authorships,publication_year,primary_location,cited_by_count,open_access,best_oa_location&per-page=8&mailto=scholarhunt@app.id`);
     const d2 = await r2.json();
-    renderDetailCards(pane, d2.results || [], 'related');
+    const works = d2.results || [];
+
+    if (!works.length) { sec.innerHTML = '<div class="cs-empty">Tidak ada paper terkait ditemukan.</div>'; sec.dataset.loaded='1'; return; }
+
+    sec.innerHTML = `<div class="cs-head"><span>🔗 RELATED PAPERS</span><span style="color:var(--t3);font-size:.58rem">${works.length} paper</span></div>` + renderMiniCards(works);
+    sec.dataset.loaded = '1';
   } catch(e) {
-    pane.innerHTML = '<div class="detail-empty">Gagal memuat paper terkait.</div>';
+    sec.innerHTML = '<div class="cs-empty">Gagal memuat. Coba lagi nanti.</div>';
   }
 }
 
-async function loadCitedBy(oaId) {
-  const pane = document.getElementById('paneCited');
-  if (pane.dataset.loaded === oaId) return; // already loaded
-  pane.innerHTML = '<div class="detail-loading"><div class="spinner" style="width:28px;height:28px;margin:0 auto 10px"></div><p>Memuat paper yang mengutip…</p></div>';
-  pane.dataset.loaded = oaId;
+async function loadCitedInCard(sec, w) {
+  sec.innerHTML = '<div class="cs-loading"><div class="mini-spin"></div> Memuat yang mengutip…</div>';
+  const oaId = w.id?.replace('https://openalex.org/', '');
+  if (!oaId) { sec.innerHTML = '<div class="cs-empty">ID artikel tidak tersedia.</div>'; return; }
 
   try {
-    const url = `https://api.openalex.org/works?filter=cites:${oaId}&sort=cited_by_count:desc&select=id,doi,title,authorships,publication_year,primary_location,cited_by_count,open_access,best_oa_location&per-page=10&mailto=scholarhunt@app.id`;
-    const res = await fetch(url);
-    const data = await res.json();
-    const works = data.results || [];
+    const r = await fetch(`https://api.openalex.org/works?filter=cites:${oaId}&sort=cited_by_count:desc&select=id,doi,title,authorships,publication_year,primary_location,cited_by_count,open_access,best_oa_location&per-page=8&mailto=scholarhunt@app.id`);
+    const d = await r.json();
+    const works = d.results || [];
+    const total = d.meta?.count || 0;
 
-    if (!works.length) {
-      pane.innerHTML = '<div class="detail-empty">Belum ada paper yang mengutip artikel ini.</div>';
-      return;
+    if (!works.length) { sec.innerHTML = `<div class="cs-empty">Belum ada yang mengutip artikel ini.</div>`; sec.dataset.loaded='1'; return; }
+
+    let html = `<div class="cs-head"><span>📌 CITED BY</span><span style="color:var(--t3);font-size:.58rem">${total > works.length ? `${works.length} dari ${total.toLocaleString('id-ID')}` : works.length} paper</span></div>`;
+    if (total > works.length) {
+      html += `<div class="cs-total">Menampilkan 8 dari <strong>${total.toLocaleString('id-ID')}</strong> paper yang mengutip artikel ini</div>`;
     }
-
-    const total = data.meta?.count || works.length;
-    renderDetailCards(pane, works, 'cited', total);
+    html += renderMiniCards(works);
+    sec.innerHTML = html;
+    sec.dataset.loaded = '1';
   } catch(e) {
-    pane.innerHTML = '<div class="detail-empty">Gagal memuat data sitasi.</div>';
-    delete pane.dataset.loaded;
+    sec.innerHTML = '<div class="cs-empty">Gagal memuat. Coba lagi nanti.</div>';
   }
 }
 
-function renderDetailCards(container, works, type, total) {
-  let html = '';
-  if (total && total > works.length) {
-    html += `<div class="detail-total">Menampilkan 10 dari <strong>${total.toLocaleString('id-ID')}</strong> paper yang mengutip</div>`;
-  }
-  works.forEach(w => {
-    const doi = w.doi?.replace('https://doi.org/', '') || null;
+function renderMiniCards(works) {
+  return works.map(w => {
+    const doi = w.doi?.replace('https://doi.org/','') || null;
     const pdf = w.best_oa_location?.pdf_url || w.open_access?.oa_url || null;
-    const title = w.title || 'Untitled';
-    const authors = (w.authorships || []).slice(0, 3).map(a => a.author?.display_name || '').filter(Boolean).join(', ');
-    const moreA = (w.authorships?.length || 0) > 3 ? ` +${w.authorships.length - 3}` : '';
+    const authors = (w.authorships||[]).slice(0,3).map(a=>a.author?.display_name||'').filter(Boolean).join(', ');
+    const moreA = (w.authorships?.length||0) > 3 ? ` +${w.authorships.length-3}` : '';
     const journal = w.primary_location?.source?.display_name || '';
     const year = w.publication_year || '?';
-    const cited = (w.cited_by_count || 0).toLocaleString('id-ID');
+    const cited = (w.cited_by_count||0).toLocaleString('id-ID');
     const isOA = w.open_access?.is_oa;
-
-    html += `
-    <div class="dcard">
-      <div class="dcard-badges">
-        ${isOA ? '<span class="b b-oa">◉ Open Access</span>' : ''}
-        <span class="b b-yr">${year}</span>
+    return `
+    <div class="mini-card">
+      <div class="mini-card-title" onclick="${doi?`window.open('https://doi.org/${doi}','_blank')`:''}">
+        ${esc(w.title||'Untitled')}
       </div>
-      <div class="dcard-title" onclick="${doi ? `window.open('https://doi.org/${doi}','_blank')` : ''}">${esc(title)}</div>
-      ${authors ? `<div class="dcard-auth">👤 ${esc(authors)}${moreA ? `<span style="color:var(--t3)"> ${moreA}</span>` : ''}</div>` : ''}
-      ${journal ? `<div class="dcard-jrnl">📰 ${esc(journal)}</div>` : ''}
-      <div class="dcard-foot">
-        <span class="dcard-cite">📌 ${cited} sitasi</span>
-        <div style="display:flex;gap:5px">
-          ${pdf ? `<a href="${pdf}" target="_blank" class="btn btn-pdf" style="font-size:.58rem;padding:3px 8px">⬇ PDF</a>` : ''}
-          ${doi ? `<a href="https://doi.org/${doi}" target="_blank" class="btn btn-doi" style="font-size:.58rem;padding:3px 8px">DOI →</a>` : ''}
-        </div>
+      <div class="mini-card-meta">
+        ${authors ? `👤 ${esc(authors)}${moreA?`<span style="color:var(--t3)"> ${moreA}</span>`:''} &nbsp;` : ''}
+        ${journal ? `📰 ${esc(journal)} · ` : ''}${year}
+        &nbsp;📌 ${cited} sitasi
+        ${isOA ? ' &nbsp;<span class="b b-oa" style="font-size:.54rem;padding:1px 6px">OA</span>' : ''}
+      </div>
+      <div class="mini-card-acts">
+        ${pdf ? `<a href="${pdf}" target="_blank" class="btn btn-pdf" style="font-size:.58rem;padding:3px 8px;min-height:28px">⬇ PDF</a>` : ''}
+        ${doi ? `<a href="https://doi.org/${doi}" target="_blank" class="btn btn-doi" style="font-size:.58rem;padding:3px 8px;min-height:28px">DOI →</a>` : ''}
       </div>
     </div>`;
-  });
-  container.innerHTML = html;
+  }).join('');
 }
